@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-pragma solidity ^0.8.23;
+pragma solidity 0.8.30;
 
 import {SafeERC20, IERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC165} from "openzeppelin-contracts/contracts/utils/introspection/IERC165.sol";
@@ -62,6 +62,10 @@ contract StakingV2Mock is ERC165, IMigratorReceiverV2 {
         return new UserStake[](0);
     }
 
+    function getClaimable(address, uint8) external pure returns (uint256) {
+        return 0;
+    }
+
     function getUserStake(address, uint8) external pure returns (UserStake memory) {
         return UserStake({
             amount: 0,
@@ -86,10 +90,25 @@ contract StakingV2Mock is ERC165, IMigratorReceiverV2 {
     {
         return 0;
     }
-    function withdraw(uint8) external pure {}
+
+    function withdraw(uint8) external pure returns (uint256) {
+        return 0;
+    }
 
     function addStakingPeriod(uint256, uint64, uint64, uint32, bool) external pure returns (uint8) {
         return 0;
     }
     function updateStakingPeriod(uint8, uint256, uint64, uint64, uint32, bool) external pure {}
+
+    function activeTotalStaked() external pure returns (uint256) {
+        return 0;
+    }
+
+    function activeTotalRewards() external pure returns (uint256) {
+        return 0;
+    }
+
+    function paused() public view virtual returns (bool) {
+        return false;
+    }
 }

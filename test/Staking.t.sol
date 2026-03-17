@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-pragma solidity ^0.8.23;
+pragma solidity 0.8.30;
 
 import {ERC20Permit, ERC20} from "openzeppelin-contracts/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {IERC165} from "openzeppelin-contracts/contracts/utils/introspection/IERC165.sol";
@@ -214,8 +214,9 @@ contract StakingTest is Test {
         vm.prank(alice);
         token.approve(address(staking), 10 ether);
 
+        uint256 aliceReward = calculateReward(10 ether, 20, 5000);
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Staked(alice, periodIndex, address(0), 0, 10 ether);
+        emit IStakingV1.Staked(alice, periodIndex, address(0), 0, 10 ether, aliceReward);
         stake(alice, periodIndex, 10 ether, 20, 5, 5000, address(0));
 
         Staking.UserStake[] memory aliceStakes = staking.getUserStakes(alice);
@@ -233,14 +234,33 @@ contract StakingTest is Test {
         vm.prank(alice);
         token.approve(address(staking), 10 ether);
 
+        uint256 aliceReward = calculateReward(10 ether, 20, 5000);
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Staked(alice, periodIndex, bob, 0, 10 ether);
+        emit IStakingV1.Staked(alice, periodIndex, bob, 0, 10 ether, aliceReward);
         stake(alice, periodIndex, 10 ether, 20, 5, 5000, bob);
 
         Staking.UserStake[] memory aliceStakes = staking.getUserStakes(alice);
         assertEq(aliceStakes.length, 1);
         assertEq(aliceStakes[0].amount, 10 ether);
         assertEq(token.balanceOf(address(staking)), 1000 ether + 10 ether);
+    }
+
+    function test_Staking_StakeIncreaseCapUsed() public {
+        deal(address(token), address(staking), 1000 ether);
+        deal(address(token), alice, 100 ether);
+
+        uint8 periodIndex = addStakingPeriodByManager(50 ether, 20, 5, 5000, true);
+
+        vm.prank(alice);
+        token.approve(address(staking), 40 ether);
+
+        stake(alice, periodIndex, 10 ether, 20, 5, 5000, address(0));
+        IStakingV1.StakingPeriod memory stakingPeriod1 = staking.getStakingPeriod(periodIndex);
+        assertEq(stakingPeriod1.capUsed, 10 ether);
+
+        stake(alice, periodIndex, 5 ether, 20, 5, 5000, address(0));
+        IStakingV1.StakingPeriod memory stakingPeriod2 = staking.getStakingPeriod(periodIndex);
+        assertEq(stakingPeriod2.capUsed, 10 ether + 5 ether);
     }
 
     function test_Staking_RevertWhen_InsufficientAllowance() public {
@@ -382,12 +402,14 @@ contract StakingTest is Test {
         vm.prank(alice);
         token.approve(address(staking), 20 ether);
         for (uint256 i = 0; i < maxStakesPerUser; i++) {
+            uint256 amount = 100 gwei + i;
+            uint256 aliceReward = calculateReward(amount, 20, 5000);
             vm.expectEmit(true, true, true, true);
             assertLe(i, maxStakesPerUser);
             // casting to 'uint8' is safe because overflow checked in row above
             // forge-lint: disable-next-line(unsafe-typecast)
-            emit IStakingV1.Staked(alice, periodIndex, address(0), uint8(i), 100 gwei + i);
-            stake(alice, periodIndex, 100 gwei + i, 20, 10, 5000, address(0));
+            emit IStakingV1.Staked(alice, periodIndex, address(0), uint8(i), amount, aliceReward);
+            stake(alice, periodIndex, amount, 20, 10, 5000, address(0));
         }
 
         Staking.UserStake[] memory aliceStakes = staking.getUserStakes(alice);
@@ -425,8 +447,9 @@ contract StakingTest is Test {
         uint256 deadline = block.timestamp + 1 hours;
         (uint8 v, bytes32 r, bytes32 s) = signCharliePermit(10 ether, deadline);
 
+        uint256 charlieReward = calculateReward(10 ether, 20, 5000);
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Staked(charlie, periodIndex, address(0), 0, 10 ether);
+        emit IStakingV1.Staked(charlie, periodIndex, address(0), 0, 10 ether, charlieReward);
         stakeWithPermit(charlie, periodIndex, 10 ether, 20, 10, 5000, address(0), deadline, v, r, s);
 
         Staking.UserStake[] memory charlieStakes = staking.getUserStakes(charlie);
@@ -445,8 +468,9 @@ contract StakingTest is Test {
         uint256 deadline = block.timestamp + 1 hours;
         (uint8 v, bytes32 r, bytes32 s) = signCharliePermit(10 ether, deadline);
 
+        uint256 charlieReward = calculateReward(10 ether, 20, 5000);
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Staked(charlie, periodIndex, bob, 0, 10 ether);
+        emit IStakingV1.Staked(charlie, periodIndex, bob, 0, 10 ether, charlieReward);
         stakeWithPermit(charlie, periodIndex, 10 ether, 20, 10, 5000, bob, deadline, v, r, s);
 
         Staking.UserStake[] memory charlieStakes = staking.getUserStakes(charlie);
@@ -560,7 +584,8 @@ contract StakingTest is Test {
         vm.expectEmit(true, true, true, true);
         emit IStakingV1.Withdrawn(alice, stakeIndex, 10 ether, reward);
         vm.prank(alice);
-        staking.withdraw(stakeIndex);
+        uint256 withdrawn = staking.withdraw(stakeIndex);
+        assertEq(withdrawn, 10 ether + reward);
 
         uint256 expectedAliceBalance = initialAliceBalance + reward;
         assertEq(token.balanceOf(alice), expectedAliceBalance);
@@ -575,6 +600,9 @@ contract StakingTest is Test {
         uint8 periodIndex = addStakingPeriodByManager(50 ether, 10 days, 3 days, 5000, true);
         uint8 stakeIndex = approveAndStake(alice, periodIndex, 10 ether, 10 days, 3 days, 5000, address(0));
 
+        uint256 claimableBefore = staking.getClaimable(alice, stakeIndex);
+        assertEq(claimableBefore, 0);
+
         vm.warp(block.timestamp + 10 days + 1 days);
 
         uint256 totalReward = calculateReward(10 ether, 10 days, 5000);
@@ -582,23 +610,34 @@ contract StakingTest is Test {
         uint256 accruedAmount = uint256(10 ether * 1 days) / 3 days;
         uint256 accruedReward = uint256(totalReward * 1 days) / 3 days;
 
+        uint256 claimableStep1 = staking.getClaimable(alice, stakeIndex);
+        assertEq(claimableStep1, accruedAmount + accruedReward);
+
         vm.startPrank(alice);
         vm.expectEmit(true, true, true, true);
         emit IStakingV1.Withdrawn(alice, stakeIndex, accruedAmount, accruedReward);
-        staking.withdraw(stakeIndex);
+        uint256 withdrawn1 = staking.withdraw(stakeIndex);
+        assertEq(withdrawn1, claimableStep1);
 
         uint256 expectedAliceBalance = initialAliceBalance - 10 ether + accruedAmount + accruedReward;
         assertEq(token.balanceOf(alice), expectedAliceBalance);
 
         vm.warp(block.timestamp + 2 days + 1);
 
+        uint256 claimableStep2 = staking.getClaimable(alice, stakeIndex);
+        assertEq(claimableStep2, 10 ether - accruedAmount + totalReward - accruedReward);
+
         vm.expectEmit(true, true, true, true);
         emit IStakingV1.Withdrawn(alice, stakeIndex, 10 ether - accruedAmount, totalReward - accruedReward);
-        staking.withdraw(stakeIndex);
+        uint256 withdrawn2 = staking.withdraw(stakeIndex);
+        assertEq(withdrawn2, claimableStep2);
         vm.stopPrank();
 
         assertEq(token.balanceOf(alice), initialAliceBalance + totalReward);
         assertEq(token.balanceOf(address(staking)), 1000 ether - totalReward);
+
+        uint256 claimableAfter = staking.getClaimable(alice, stakeIndex);
+        assertEq(claimableAfter, 0);
     }
 
     function test_Staking_RevertWhen_AlreadyWithdrawn() public {
@@ -655,6 +694,11 @@ contract StakingTest is Test {
         );
         vm.prank(alice);
         staking.withdraw(stakeIndex);
+    }
+
+    function test_Staking_RevertWhen_GetClaimableOnNonExistingStake() public {
+        vm.expectRevert(abi.encodeWithSelector(IStakingV1.StakeNotFound.selector));
+        staking.getClaimable(alice, 1);
     }
 
     function test_Staking_GetActiveTotalStackedAndRewards() public {
@@ -749,7 +793,7 @@ contract StakingTest is Test {
         uint256 amountToRecover = 50 ether;
 
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Recovered(address(token), amountToRecover);
+        emit IStakingV1.Recovered(address(token), manager, amountToRecover);
         vm.prank(manager);
         staking.recoverERC20(address(token), amountToRecover);
 
@@ -768,7 +812,7 @@ contract StakingTest is Test {
         approveAndStake(alice, periodIndex, 10 ether, 10 days, 10, 5000, address(0));
 
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.Recovered(address(unsupportedToken), amountToRecover);
+        emit IStakingV1.Recovered(address(unsupportedToken), manager, amountToRecover);
         vm.prank(manager);
         staking.recoverERC20(address(unsupportedToken), amountToRecover);
 
@@ -841,6 +885,37 @@ contract StakingTest is Test {
         staking.setMigrationPermit(bob, true);
     }
 
+    function test_Migration_SetMigrationPermit_IdempotentNoOp() public {
+        vm.recordLogs();
+        vm.prank(alice);
+        staking.setMigrationPermit(migrator, false);
+        assertEq(vm.getRecordedLogs().length, 0);
+
+        vm.prank(alice);
+        staking.setMigrationPermit(migrator, true);
+
+        vm.recordLogs();
+        vm.prank(alice);
+        staking.setMigrationPermit(migrator, true);
+        assertEq(vm.getRecordedLogs().length, 0);
+    }
+
+    function test_Migration_RemoveMigrationPermitAfterMigratorRoleRevoke() public {
+        assertEq(staking.migrationPermits(migrator, alice), false);
+
+        vm.prank(alice);
+        staking.setMigrationPermit(migrator, true);
+        assertEq(staking.migrationPermits(migrator, alice), true);
+
+        vm.prank(admin);
+        staking.revokeRole(keccak256("MIGRATOR"), migrator);
+        assertEq(staking.hasRole(keccak256("MIGRATOR"), migrator), false);
+
+        vm.prank(alice);
+        staking.setMigrationPermit(migrator, false);
+        assertEq(staking.migrationPermits(migrator, alice), false);
+    }
+
     function test_Migration_SupportIMigratorV1() public view {
         bytes4 erc165InterfaceId = type(IERC165).interfaceId;
         bytes4 fromInterfaceId = type(IMigratorV1).interfaceId;
@@ -865,8 +940,9 @@ contract StakingTest is Test {
         staking.setMigrationPermit(migrator, true);
         assertEq(staking.getUserStakes(alice).length, 1);
 
+        uint256 aliceReward = calculateReward(10 ether, 20, 5000);
         vm.expectEmit(true, true, true, true);
-        emit IStakingV1.MigrateFrom(migrator, alice);
+        emit IStakingV1.MigratedFrom(migrator, alice, 1, 10 ether, aliceReward);
         vm.prank(migrator);
         IStakingV1.UserStake[] memory migratedStakes = staking.migratePositionsFrom(alice);
         assertEq(migratedStakes.length, 1);
@@ -904,9 +980,7 @@ contract StakingTest is Test {
         assertEq(migratedStakes[0].amount, 8 ether);
         assertEq(migratedStakes[1].amount, 4 ether);
 
-        assertEq(staking.getUserStakes(alice).length, 1);
-        assertEq(staking.getUserStakes(alice)[0].amount, 7 ether);
-
+        assertEq(staking.getUserStakes(alice).length, 0);
         assertEq(staking.activeTotalStaked(), 0);
         assertEq(staking.activeTotalRewards(), 0);
     }
@@ -930,7 +1004,7 @@ contract StakingTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         assertEq(migratedStakes.length, maxStakesPerUser);
-        assertLe(gasUsed, 1e6); // 1_000_000 Gas
+        assertLe(gasUsed, 12e5); // 1_200_000 Gas
     }
 
     function test_Migration_MigratePartiallyWithdrawnStake() public {

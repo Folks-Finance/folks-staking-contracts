@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-pragma solidity ^0.8.23;
+pragma solidity 0.8.30;
 
 import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -49,12 +49,23 @@ interface IStakingV1 {
         bool isActive
     );
     event Staked(
-        address indexed user, uint8 indexed periodIndex, address indexed referer, uint8 stakeIndex, uint256 amount
+        address indexed user,
+        uint8 indexed periodIndex,
+        address indexed referrer,
+        uint8 stakeIndex,
+        uint256 amount,
+        uint256 reward
     );
     event Withdrawn(address indexed user, uint8 stakeIndex, uint256 amount, uint256 reward);
-    event Recovered(address indexed token, uint256 amount);
+    event Recovered(address indexed token, address indexed recipient, uint256 amount);
     event MigrationPermitUpdated(address indexed migrator, address indexed user, bool isMigrationPermitted);
-    event MigrateFrom(address indexed migrator, address indexed user);
+    event MigratedFrom(
+        address indexed migrator,
+        address indexed user,
+        uint8 migratedCount,
+        uint256 unclaimedUserAmount,
+        uint256 unclaimedUserRewards
+    );
 
     error CannotStakeZero();
     error StakingDurationCannotBeZero();
@@ -62,10 +73,10 @@ interface IStakingV1 {
     error StakingCapReached(uint256 cap);
     error StakingPeriodInactive(uint8 periodIndex);
     error StakingPeriodStakingDurationDiffer(
-        uint8 periodIndex, uint64 expectedMaxStakingDurationApr, uint64 periodStakingDuration
+        uint8 periodIndex, uint64 expectedMaxStakingDuration, uint64 periodStakingDuration
     );
     error StakingPeriodUnlockDurationDiffer(
-        uint8 periodIndex, uint64 expectedMaxUnlockDurationApr, uint64 periodUnlockDuration
+        uint8 periodIndex, uint64 expectedMaxUnlockDuration, uint64 periodUnlockDuration
     );
     error StakingPeriodAprDiffer(uint8 periodIndex, uint32 expectedMinApr, uint32 periodApr);
     error MaxStakingPeriodsReached();
@@ -89,7 +100,7 @@ interface IStakingV1 {
         bytes32 r,
         bytes32 s
     ) external returns (uint8);
-    function withdraw(uint8 stakeIndex) external;
+    function withdraw(uint8 stakeIndex) external returns (uint256);
 
     function addStakingPeriod(
         uint256 _cap,
@@ -112,4 +123,8 @@ interface IStakingV1 {
     function getStakingPeriod(uint8 periodIndex) external view returns (StakingPeriod memory);
     function getUserStakes(address user) external view returns (UserStake[] memory);
     function getUserStake(address user, uint8 stakeIndex) external view returns (UserStake memory);
+    function getClaimable(address user, uint8 stakeIndex) external view returns (uint256);
+    function activeTotalStaked() external view returns (uint256);
+    function activeTotalRewards() external view returns (uint256);
+    function paused() external view returns (bool);
 }
