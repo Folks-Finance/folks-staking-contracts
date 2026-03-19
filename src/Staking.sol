@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-pragma solidity ^0.8.23;
+pragma solidity 0.8.30;
 
 import {SafeERC20, IERC20} from "openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC165} from "openzeppelin-contracts/contracts/utils/introspection/IERC165.sol";
@@ -70,12 +70,13 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
     }
 
     // user allowed to withdraw when contract is paused
-    function withdraw(uint8 stakeIndex) external nonReentrant {
-        _withdraw(stakeIndex);
+    function withdraw(uint8 stakeIndex) external nonReentrant returns (uint256) {
+        return _withdraw(stakeIndex);
     }
 
     function setMigrationPermit(address _migrator, bool _isMigrationPermitted) external {
-        if (!hasRole(MIGRATOR_ROLE, _migrator)) revert MigratorNotFound(_migrator);
+        if (migrationPermits[_migrator][msg.sender] == _isMigrationPermitted) return;
+        if (_isMigrationPermitted && !hasRole(MIGRATOR_ROLE, _migrator)) revert MigratorNotFound(_migrator);
 
         migrationPermits[_migrator][msg.sender] = _isMigrationPermitted;
         emit MigrationPermitUpdated(_migrator, msg.sender, _isMigrationPermitted);
@@ -147,7 +148,7 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
      *          except staking token itself. In case of staking token - manager allowed to recover only
      *          extra amount (which is not supposed to be distributed to users)
      */
-    function recoverERC20(address tokenAddress, uint256 tokenAmount) external onlyRole(MANAGER_ROLE) {
+    function recoverERC20(address tokenAddress, uint256 tokenAmount) external nonReentrant onlyRole(MANAGER_ROLE) {
         if (tokenAddress == address(TOKEN)) {
             uint256 requiredBalance = activeTotalStaked + activeTotalRewards;
             uint256 contractTokenBalance = TOKEN.balanceOf(address(this));
@@ -156,8 +157,9 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
                 revert NotEnoughBalanceToRecover(tokenAddress, tokenAmount, contractTokenBalance - requiredBalance);
             }
         }
+
+        emit Recovered(tokenAddress, msg.sender, tokenAmount);
         IERC20(tokenAddress).safeTransfer(msg.sender, tokenAmount);
-        emit Recovered(tokenAddress, tokenAmount);
     }
 
     /**
@@ -183,12 +185,11 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
         UserStake[] memory migratedStakes = new UserStake[](stakesToMigrateCount);
         delete userStakes[user];
 
-        uint256 migratedCount;
+        uint8 migratedCount;
         uint256 unclaimedUserAmount;
         uint256 unclaimedUserRewards;
         for (uint256 i = 0; i < stakes.length; i++) {
             if (stakes[i].claimedAmount + stakes[i].claimedReward >= stakes[i].amount + stakes[i].reward) {
-                userStakes[user].push(stakes[i]);
                 continue;
             }
             unclaimedUserAmount += stakes[i].amount - stakes[i].claimedAmount;
@@ -203,9 +204,8 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
         activeTotalStaked -= unclaimedUserAmount;
         activeTotalRewards -= unclaimedUserRewards;
 
+        emit MigratedFrom(msg.sender, user, migratedCount, unclaimedUserAmount, unclaimedUserRewards);
         TOKEN.safeTransfer(msg.sender, unclaimedUserAmount + unclaimedUserRewards);
-
-        emit MigrateFrom(msg.sender, user);
         return migratedStakes;
     }
 
@@ -225,6 +225,21 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
     function getUserStake(address user, uint8 stakeIndex) external view returns (UserStake memory) {
         if (stakeIndex >= userStakes[user].length) revert StakeNotFound();
         return userStakes[user][stakeIndex];
+    }
+
+    function getClaimable(address user, uint8 stakeIndex) external view returns (uint256) {
+        if (stakeIndex >= userStakes[user].length) revert StakeNotFound();
+
+        UserStake memory userStake = userStakes[user][stakeIndex];
+
+        if (block.timestamp <= userStake.unlockTime) return 0;
+
+        (uint256 amountToClaim, uint256 rewardToClaim) = _getClaimableAmounts(userStake);
+        return amountToClaim + rewardToClaim;
+    }
+
+    function paused() public view virtual override(IStakingV1, Pausable) returns (bool) {
+        return super.paused();
     }
 
     function supportsInterface(bytes4 interfaceId)
@@ -291,7 +306,7 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
             })
         );
 
-        emit Staked(msg.sender, periodIndex, params.referrer, stakeIndex, amount);
+        emit Staked(msg.sender, periodIndex, params.referrer, stakeIndex, amount, reward);
         TOKEN.safeTransferFrom(msg.sender, address(this), amount);
         return stakeIndex;
     }
@@ -301,7 +316,7 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
      *             staked amount and reward accrued linearly during unlock period
      *             user can withdraw multiple times
      */
-    function _withdraw(uint8 stakeIndex) internal {
+    function _withdraw(uint8 stakeIndex) internal returns (uint256) {
         if (stakeIndex >= userStakes[msg.sender].length) revert StakeNotFound();
 
         UserStake storage userStake = userStakes[msg.sender][stakeIndex];
@@ -312,13 +327,8 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
             revert AlreadyWithdrawn(stakeIndex);
         }
 
-        uint256 accruedAmount =
-            _getAccrued(userStake.amount, userStake.unlockDuration, block.timestamp - userStake.unlockTime);
-        uint256 accruedReward =
-            _getAccrued(userStake.reward, userStake.unlockDuration, block.timestamp - userStake.unlockTime);
-
-        uint256 amountToClaim = accruedAmount - userStake.claimedAmount;
-        uint256 rewardToClaim = accruedReward - userStake.claimedReward;
+        (uint256 amountToClaim, uint256 rewardToClaim) = _getClaimableAmounts(userStake);
+        uint256 totalToWithdraw = amountToClaim + rewardToClaim;
 
         activeTotalStaked -= amountToClaim;
         activeTotalRewards -= rewardToClaim;
@@ -326,10 +336,24 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
         userStake.claimedReward += rewardToClaim;
 
         emit Withdrawn(msg.sender, stakeIndex, amountToClaim, rewardToClaim);
-        TOKEN.safeTransfer(msg.sender, amountToClaim + rewardToClaim);
+        TOKEN.safeTransfer(msg.sender, totalToWithdraw);
+        return totalToWithdraw;
     }
 
     function _getAccrued(uint256 amount, uint256 duration, uint256 elapsed) internal pure returns (uint256) {
         return Math.mulDiv(amount, Math.min(elapsed, duration), duration);
+    }
+
+    function _getClaimableAmounts(UserStake memory userStake)
+        internal
+        view
+        returns (uint256 claimableAmount, uint256 claimableReward)
+    {
+        uint256 elapsed = block.timestamp - userStake.unlockTime;
+        uint256 accruedAmount = _getAccrued(userStake.amount, userStake.unlockDuration, elapsed);
+        uint256 accruedReward = _getAccrued(userStake.reward, userStake.unlockDuration, elapsed);
+
+        claimableAmount = accruedAmount - userStake.claimedAmount;
+        claimableReward = accruedReward - userStake.claimedReward;
     }
 }

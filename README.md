@@ -97,6 +97,8 @@ The contract never accepts a deposit it cannot guarantee to pay out.
 
 User can have up to 100 stakes (`MAX_STAKES_PER_USER`). Fully withdrawn stakes continue to occupy slots in the array and count toward this limit.
 
+Manager supposed to set reasonable staking parameters: cap limit, APR, staking duration and unlock duration.
+
 ### Reward Calculation
 
 Rewards follow a simple fixed-APR formula computed once at deposit time:
