@@ -91,6 +91,10 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
     ) external onlyRole(MANAGER_ROLE) returns (uint8) {
         if (_stakingDurationSeconds == 0) revert StakingDurationCannotBeZero();
         if (_unlockDurationSeconds == 0) revert UnlockDurationCannotBeZero();
+        require(
+            _unlockDurationSeconds > _stakingDurationSeconds,
+            "The unlock duration must exceed the staking duration"
+        );
         if (stakingPeriods.length > type(uint8).max) revert MaxStakingPeriodsReached();
 
         // to simplify logic, we don't set restrictions on non-zero rewards
@@ -120,6 +124,10 @@ contract Staking is IMigratorV1, Pausable, ReentrancyGuard, AccessControlDefault
     ) external onlyRole(MANAGER_ROLE) {
         if (_stakingDurationSeconds == 0) revert StakingDurationCannotBeZero();
         if (_unlockDurationSeconds == 0) revert UnlockDurationCannotBeZero();
+        require(
+            _unlockDurationSeconds > _stakingDurationSeconds,
+            "The unlock duration must exceed the staking duration"
+        );
         if (periodIndex >= stakingPeriods.length) revert PeriodNotFound();
         StakingPeriod storage stakingPeriod = stakingPeriods[periodIndex];
 
